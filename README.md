@@ -1,59 +1,98 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Warehouse Inventory Reservation Engine
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Core inventory correctness engine for a multi-warehouse ERP: safe reservations,
+shipment processing with a mock shipping provider, and full movement history —
+built to remain correct under concurrent access, retries, and duplicate events.
 
-## About Laravel
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the domain model, lifecycle,
+and concurrency design, and [`docs/AI_USAGE.md`](docs/AI_USAGE.md) for AI usage
+transparency.
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## Requirements
+- PHP 8.2+
+- MySQL 8+
+- Composer
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## Setup
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+```bash
+composer install
+cp .env.example .env
+php artisan key:generate
+```
 
-## Learning Laravel
+Configure your database in `.env`:
+```
+DB_CONNECTION=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE=inventory_engine
+DB_USERNAME=root
+DB_PASSWORD=
+```
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
+Run migrations (and seeders, if present):
+```bash
+php artisan migrate --seed
+```
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+## Running the app / queue
 
-## Laravel Sponsors
+```bash
+php artisan serve
+```
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+Shipments are processed asynchronously — run a queue worker in a separate terminal:
+```bash
+php artisan queue:work
+```
 
-### Premium Partners
+To dispatch pending shipments for processing:
+```bash
+php artisan shipments:process
+```
+(Artisan command name may differ — check `app/Console/Commands` for the exact
+signature registered in this repo.)
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
+## Running tests
 
-## Contributing
+```bash
+php artisan test
+```
+or, if using Pest:
+```bash
+./vendor/bin/pest
+```
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+Tests cover:
+- Concurrent reservation of the last available unit (no oversell)
+- Idempotent reservation creation (same command run twice)
+- Duplicate shipment webhook handling
+- Partial shipment inventory correctness
+- Insufficient-stock rejection
 
-## Code of Conduct
+## Key assumptions
+- A reservation expires 24 hours after creation (`expires_at = now()->addDay()`),
+  released via a scheduled scan calling `ReservationService::expireReservation()`,
+  not an automatic DB-level TTL.
+- One active (ACTIVE or CONSUMED) reservation is allowed per order at a time;
+  re-running the reservation command for an order that already has one returns the
+  existing reservation instead of creating a duplicate.
+- Partial shipments ship as much of the *remaining* (not total) item quantity as the
+  mock provider reports, and leave the shipment in `PARTIALLY_DELIVERED` until a
+  follow-up confirmation completes it.
+- Inventory transfers between warehouses only move `available_quantity`; reserved,
+  picked, and shipped quantities are never affected by a transfer.
+- `performed_by` on ledger/history entries defaults to `'system'` where no
+  authenticated actor is available — authentication/authorization is out of scope
+  for this engine per the brief.
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
-
-## Security Vulnerabilities
-
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
-
-## License
-
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+## Known limitations
+- No authentication/authorization layer — service methods assume a trusted caller
+  (controller/job) already authorized the action.
+- Webhook signature verification is a placeholder (`verifyWebhookSignature`) and
+  needs a real HMAC check against a provider secret before production use.
+- Reservation expiry requires a scheduled command to be registered in
+  `routes/console.php` / the scheduler — it is not automatic.
+- Single-database design; see `docs/ARCHITECTURE.md §6` for the scaling path if
+  transaction volume grows beyond a single MySQL primary.
