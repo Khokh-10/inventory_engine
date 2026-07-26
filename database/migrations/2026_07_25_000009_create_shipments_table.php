@@ -16,7 +16,14 @@ return new class extends Migration
             $table->id();
             $table->foreignId('order_id')->constrained()->cascadeOnDelete();
             $table->string('tracking_number')->nullable();
+            $table->string('provider_reference')->nullable();
+            $table->string('provider_name')->nullable();
+            $table->string('provider_response')->nullable();
             $table->string('status')->default(ShipmentStatus::PENDING->value);
+            $table->string('failure_reason')->nullable();
+            $table->timestamp('delivered_at')->nullable();
+            $table->unsignedInteger('retry_count')->default(0);
+            $table->timestamp('last_retry_at')->nullable();
             $table->timestamps();
 
             $table->index('status');

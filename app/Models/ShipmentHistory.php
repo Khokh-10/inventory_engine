@@ -6,9 +6,11 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-class ShipmentWebhook extends Model
+class ShipmentHistory extends Model
 {
     use HasFactory;
+
+    public $timestamps = false;
 
     /**
      * The attributes that are mass assignable.
@@ -17,12 +19,10 @@ class ShipmentWebhook extends Model
      */
     protected $fillable = [
         'shipment_id',
-        'event_id',
-        'payload',
-        'processed_at',
-        'provider',
-        'event_type',
-        'status',
+        'event',
+        'details',
+        'metadata',
+        'created_at',
     ];
 
     /**
@@ -31,12 +31,13 @@ class ShipmentWebhook extends Model
      * @var array<string, string>
      */
     protected $casts = [
-        'payload' => 'array',
-        'processed_at' => 'datetime',
+        'details' => 'array',
+        'metadata' => 'array',
+        'created_at' => 'datetime',
     ];
 
     /**
-     * A shipment webhook belongs to a shipment.
+     * A history entry belongs to a shipment.
      *
      * @return BelongsTo<Shipment, $this>
      */

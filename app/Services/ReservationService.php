@@ -11,7 +11,6 @@ use App\Exceptions\ReservationExpiredException;
 use App\Models\Order;
 use App\Models\Reservation;
 use App\Models\ReservationItem;
-use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Support\Facades\DB;
 
 class ReservationService
@@ -22,10 +21,30 @@ class ReservationService
 
     /**
      * Create a reservation for an order using inventory service for stock movements.
+     *
+     * Idempotency: if the order already has a non-terminal reservation
+     * (ACTIVE or CONSUMED), we return that existing reservation instead of
+     * creating a duplicate. This protects against the same command/request
+     * being executed twice (e.g. a retried queue job, a double form submit,
+     * or a client retrying after a timeout without knowing the first
+     * request actually succeeded).
      */
     public function createReservation(Order $order, array $reservationItems): Reservation
     {
         return DB::transaction(function () use ($order, $reservationItems): Reservation {
+            // Lock the order row so two concurrent calls for the same order
+            // can't both pass the "no existing reservation" check at once.
+            $order = Order::query()->whereKey($order->getKey())->lockForUpdate()->firstOrFail();
+
+            $existing = Reservation::query()
+                ->where('order_id', $order->getKey())
+                ->whereIn('status', [ReservationStatus::ACTIVE, ReservationStatus::CONSUMED])
+                ->first();
+
+            if ($existing !== null) {
+                return $this->loadReservationWithItems($existing->getKey());
+            }
+
             $reservation = Reservation::query()->create([
                 'order_id' => $order->getKey(),
                 'status' => ReservationStatus::ACTIVE,
@@ -62,7 +81,7 @@ class ReservationService
     public function cancelReservation(int $reservationId): Reservation
     {
         return DB::transaction(function () use ($reservationId): Reservation {
-            $reservation = $this->loadReservationWithItems($reservationId);
+            $reservation = $this->loadReservationWithItems($reservationId, forUpdate: true);
             $this->validateReservationStatus($reservation, [ReservationStatus::ACTIVE]);
 
             foreach ($reservation->items as $item) {
@@ -89,7 +108,7 @@ class ReservationService
     public function expireReservation(int $reservationId): Reservation
     {
         return DB::transaction(function () use ($reservationId): Reservation {
-            $reservation = $this->loadReservationWithItems($reservationId);
+            $reservation = $this->loadReservationWithItems($reservationId, forUpdate: true);
             $this->validateReservationStatus($reservation, [ReservationStatus::ACTIVE]);
 
             foreach ($reservation->items as $item) {
@@ -116,7 +135,7 @@ class ReservationService
     public function consumeReservation(int $reservationId): Reservation
     {
         return DB::transaction(function () use ($reservationId): Reservation {
-            $reservation = $this->loadReservationWithItems($reservationId);
+            $reservation = $this->loadReservationWithItems($reservationId, forUpdate: true);
             $this->validateReservationStatus($reservation, [ReservationStatus::ACTIVE]);
 
             $reservation->status = ReservationStatus::CONSUMED;
@@ -141,7 +160,7 @@ class ReservationService
 
         if ($status === ReservationStatus::EXPIRED) {
             throw new ReservationExpiredException('Reservation has already expired.');
-        } 
+        }
 
         if (! in_array($status, $allowedStatuses, true)) {
             throw new InvalidReservationStateException(sprintf('Invalid reservation state: %s', $status->value));
@@ -149,12 +168,16 @@ class ReservationService
     }
 
     /**
-     * Load a reservation with its items.
+     * Load a reservation with its items, optionally locking the row for update.
      */
-    private function loadReservationWithItems(int $reservationId): Reservation
+    private function loadReservationWithItems(int $reservationId, bool $forUpdate = false): Reservation
     {
-        return Reservation::query()
-            ->with('items')
-            ->findOrFail($reservationId);
+        $query = Reservation::query()->with('items');
+
+        if ($forUpdate) {
+            $query->whereKey($reservationId)->lockForUpdate();
+        }
+
+        return $query->findOrFail($reservationId);
     }
 }

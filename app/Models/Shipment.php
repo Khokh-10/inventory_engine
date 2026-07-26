@@ -21,6 +21,13 @@ class Shipment extends Model
         'order_id',
         'tracking_number',
         'status',
+        'failure_reason',
+        'delivered_at',
+        'retry_count',
+        'last_retry_at',
+        'provider_reference',
+        'provider_name',
+        'provider_response',
     ];
 
     /**
@@ -30,6 +37,9 @@ class Shipment extends Model
      */
     protected $casts = [
         'status' => ShipmentStatus::class,
+        'delivered_at' => 'datetime',
+        'last_retry_at' => 'datetime',
+        'retry_count' => 'integer',
     ];
 
     /**
@@ -43,12 +53,32 @@ class Shipment extends Model
     }
 
     /**
+     * A shipment may have many items.
+     *
+     * @return HasMany<ShipmentItem, $this>
+     */
+    public function items(): HasMany
+    {
+        return $this->hasMany(ShipmentItem::class);
+    }
+
+    /**
      * A shipment may have many webhooks.
      *
-     * @return HasMany
+     * @return HasMany<ShipmentWebhook, $this>
      */
     public function webhooks(): HasMany
     {
-        return $this->hasMany('App\\Models\\ShipmentWebhook');
+        return $this->hasMany(ShipmentWebhook::class);
+    }
+
+    /**
+     * A shipment may have many history entries.
+     *
+     * @return HasMany<ShipmentHistory, $this>
+     */
+    public function histories(): HasMany
+    {
+        return $this->hasMany(ShipmentHistory::class);
     }
 }

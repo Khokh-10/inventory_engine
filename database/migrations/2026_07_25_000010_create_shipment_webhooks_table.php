@@ -15,6 +15,9 @@ return new class extends Migration
             $table->id();
             $table->foreignId('shipment_id')->constrained()->cascadeOnDelete();
             $table->string('event_id')->unique();
+            $table->string('provider')->nullable();
+            $table->string('event_type')->nullable();
+            $table->string('status')->nullable();
             $table->longText('payload');
             $table->timestamp('processed_at')->nullable();
             $table->timestamps();

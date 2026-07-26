@@ -15,7 +15,6 @@ use Illuminate\Support\Facades\DB;
 
 class InventoryService
 {
-    
     /**
      * Reserve inventory for an order.
      */
@@ -26,7 +25,6 @@ class InventoryService
 
             $this->validateAvailableQuantity($inventory, $quantity, TransactionType::RESERVE);
 
-            $fromState = $this->resolveState($inventory);
             $inventory->available_quantity -= $quantity;
             $inventory->reserved_quantity += $quantity;
             $this->incrementVersion($inventory);
@@ -35,7 +33,7 @@ class InventoryService
             $this->createLedgerEntry(
                 inventory: $inventory,
                 transactionType: TransactionType::RESERVE,
-                fromState: $fromState,
+                fromState: InventoryState::AVAILABLE,
                 toState: InventoryState::RESERVED,
                 quantity: $quantity,
                 referenceType: $referenceType,
@@ -49,15 +47,14 @@ class InventoryService
     }
 
     /**
-     * Release reserved inventory.
+     * Release reserved inventory back to available.
      */
     public function release(int $inventoryId, int $quantity, string $referenceType, string $referenceId, ?string $performedBy = null, ?string $notes = null): Inventory
     {
         return DB::transaction(function () use ($inventoryId, $quantity, $referenceType, $referenceId, $performedBy, $notes): Inventory {
             $inventory = $this->lockInventory($inventoryId);
-            $this->validateStateTransition($inventory, TransactionType::RELEASE, $quantity, InventoryState::RESERVED);
+            $this->validateBucketQuantity($inventory, TransactionType::RELEASE, $quantity, InventoryState::RESERVED);
 
-            $fromState = $this->resolveState($inventory);
             $inventory->reserved_quantity -= $quantity;
             $inventory->available_quantity += $quantity;
             $this->incrementVersion($inventory);
@@ -66,7 +63,7 @@ class InventoryService
             $this->createLedgerEntry(
                 inventory: $inventory,
                 transactionType: TransactionType::RELEASE,
-                fromState: $fromState,
+                fromState: InventoryState::RESERVED,
                 toState: InventoryState::AVAILABLE,
                 quantity: $quantity,
                 referenceType: $referenceType,
@@ -86,9 +83,8 @@ class InventoryService
     {
         return DB::transaction(function () use ($inventoryId, $quantity, $referenceType, $referenceId, $performedBy, $notes): Inventory {
             $inventory = $this->lockInventory($inventoryId);
-            $this->validateStateTransition($inventory, TransactionType::PICK, $quantity, InventoryState::RESERVED);
+            $this->validateBucketQuantity($inventory, TransactionType::PICK, $quantity, InventoryState::RESERVED);
 
-            $fromState = $this->resolveState($inventory);
             $inventory->reserved_quantity -= $quantity;
             $inventory->picked_quantity += $quantity;
             $this->incrementVersion($inventory);
@@ -97,7 +93,7 @@ class InventoryService
             $this->createLedgerEntry(
                 inventory: $inventory,
                 transactionType: TransactionType::PICK,
-                fromState: $fromState,
+                fromState: InventoryState::RESERVED,
                 toState: InventoryState::PICKED,
                 quantity: $quantity,
                 referenceType: $referenceType,
@@ -111,15 +107,14 @@ class InventoryService
     }
 
     /**
-     * Confirm shipment.
+     * Confirm shipment (moves picked -> shipped).
      */
     public function ship(int $inventoryId, int $quantity, string $referenceType, string $referenceId, ?string $performedBy = null, ?string $notes = null): Inventory
     {
         return DB::transaction(function () use ($inventoryId, $quantity, $referenceType, $referenceId, $performedBy, $notes): Inventory {
             $inventory = $this->lockInventory($inventoryId);
-            $this->validateStateTransition($inventory, TransactionType::SHIP, $quantity, InventoryState::PICKED);
+            $this->validateBucketQuantity($inventory, TransactionType::SHIP, $quantity, InventoryState::PICKED);
 
-            $fromState = $this->resolveState($inventory);
             $inventory->picked_quantity -= $quantity;
             $inventory->shipped_quantity += $quantity;
             $this->incrementVersion($inventory);
@@ -128,7 +123,7 @@ class InventoryService
             $this->createLedgerEntry(
                 inventory: $inventory,
                 transactionType: TransactionType::SHIP,
-                fromState: $fromState,
+                fromState: InventoryState::PICKED,
                 toState: InventoryState::SHIPPED,
                 quantity: $quantity,
                 referenceType: $referenceType,
@@ -142,15 +137,14 @@ class InventoryService
     }
 
     /**
-     * Return inventory.
+     * Return shipped inventory back to available.
      */
     public function return(int $inventoryId, int $quantity, string $referenceType, string $referenceId, ?string $performedBy = null, ?string $notes = null): Inventory
     {
         return DB::transaction(function () use ($inventoryId, $quantity, $referenceType, $referenceId, $performedBy, $notes): Inventory {
             $inventory = $this->lockInventory($inventoryId);
-            $this->validateStateTransition($inventory, TransactionType::RETURN, $quantity, InventoryState::SHIPPED);
+            $this->validateBucketQuantity($inventory, TransactionType::RETURN, $quantity, InventoryState::SHIPPED);
 
-            $fromState = $this->resolveState($inventory);
             $inventory->shipped_quantity -= $quantity;
             $inventory->available_quantity += $quantity;
             $this->incrementVersion($inventory);
@@ -159,7 +153,7 @@ class InventoryService
             $this->createLedgerEntry(
                 inventory: $inventory,
                 transactionType: TransactionType::RETURN,
-                fromState: $fromState,
+                fromState: InventoryState::SHIPPED,
                 toState: InventoryState::AVAILABLE,
                 quantity: $quantity,
                 referenceType: $referenceType,
@@ -173,22 +167,36 @@ class InventoryService
     }
 
     /**
-     * Transfer inventory between warehouses.
+     * Transfer available inventory between warehouses.
+     *
+     * Locks are always acquired in ascending inventory_id order to prevent
+     * deadlocks when two transfers run concurrently in opposite directions
+     * (e.g. A -> B and B -> A at the same time).
+     *
+     * @return array{0: Inventory, 1: Inventory} [source, destination]
      */
     public function transfer(int $sourceInventoryId, int $destinationInventoryId, int $quantity, string $referenceType, string $referenceId, ?string $performedBy = null, ?string $notes = null): array
     {
-        return DB::transaction(function () use ($sourceInventoryId, $destinationInventoryId, $quantity, $referenceType, $referenceId, $performedBy, $notes): array {
-            $sourceInventory = $this->lockInventory($sourceInventoryId);
-            $destinationInventory = $this->lockInventory($destinationInventoryId);
+        if ($sourceInventoryId === $destinationInventoryId) {
+            throw new InventoryTransferException('Source and destination inventories must be different.');
+        }
 
-            if ($sourceInventory->id === $destinationInventory->id) {
-                throw new InventoryTransferException('Source and destination inventories must be different.');
-            }
+        return DB::transaction(function () use ($sourceInventoryId, $destinationInventoryId, $quantity, $referenceType, $referenceId, $performedBy, $notes): array {
+            // Lock in a deterministic order (ascending ID) regardless of
+            // transfer direction, so two opposite-direction transfers can
+            // never wait on each other in a circular fashion.
+            $orderedIds = [$sourceInventoryId, $destinationInventoryId];
+            sort($orderedIds);
+
+            $locked = [
+                $orderedIds[0] => $this->lockInventory($orderedIds[0]),
+                $orderedIds[1] => $this->lockInventory($orderedIds[1]),
+            ];
+
+            $sourceInventory = $locked[$sourceInventoryId];
+            $destinationInventory = $locked[$destinationInventoryId];
 
             $this->validateAvailableQuantity($sourceInventory, $quantity, TransactionType::TRANSFER_OUT);
-
-            $sourceFromState = $this->resolveState($sourceInventory);
-            $destinationFromState = $this->resolveState($destinationInventory);
 
             $sourceInventory->available_quantity -= $quantity;
             $destinationInventory->available_quantity += $quantity;
@@ -202,7 +210,7 @@ class InventoryService
             $this->createLedgerEntry(
                 inventory: $sourceInventory,
                 transactionType: TransactionType::TRANSFER_OUT,
-                fromState: $sourceFromState,
+                fromState: InventoryState::AVAILABLE,
                 toState: InventoryState::AVAILABLE,
                 quantity: $quantity,
                 referenceType: $referenceType,
@@ -214,7 +222,7 @@ class InventoryService
             $this->createLedgerEntry(
                 inventory: $destinationInventory,
                 transactionType: TransactionType::TRANSFER_IN,
-                fromState: $destinationFromState,
+                fromState: InventoryState::AVAILABLE,
                 toState: InventoryState::AVAILABLE,
                 quantity: $quantity,
                 referenceType: $referenceType,
@@ -239,7 +247,8 @@ class InventoryService
     }
 
     /**
-     * Validate that there is enough available stock for a movement.
+     * Validate that there is enough available stock for a movement
+     * originating from the "available" bucket (reserve, transfer out).
      */
     private function validateAvailableQuantity(Inventory $inventory, int $quantity, TransactionType $transactionType): void
     {
@@ -253,57 +262,38 @@ class InventoryService
     }
 
     /**
-     * Validate that a state transition is allowed for the given movement.
+     * Validate that the specific quantity bucket (reserved/picked/shipped)
+     * has enough quantity for the requested movement.
+     *
+     * NOTE: This intentionally does NOT infer a single "current state" for
+     * the inventory row as a whole. A single inventory row can legitimately
+     * have available_quantity > 0 AND reserved_quantity > 0 AND
+     * picked_quantity > 0 at the same time (e.g. 10 total: 4 available,
+     * 3 reserved, 3 picked). Validation must always check the specific
+     * bucket relevant to the transition being performed, not a derived
+     * "overall" state - otherwise legitimate transitions get rejected
+     * whenever more than one bucket is non-zero.
      */
-    private function validateStateTransition(Inventory $inventory, TransactionType $transactionType, int $quantity, InventoryState $expectedState): void
+    private function validateBucketQuantity(Inventory $inventory, TransactionType $transactionType, int $quantity, InventoryState $expectedBucket): void
     {
         if ($quantity <= 0) {
             throw new InvalidInventoryStateException(sprintf('Quantity must be greater than zero for %s.', $transactionType->value));
         }
 
-        $currentState = $this->resolveState($inventory);
-        if ($currentState !== $expectedState) {
-            throw new InvalidInventoryStateException(sprintf('Invalid inventory state for %s. Expected %s but found %s.', $transactionType->value, $expectedState->value, $currentState->value));
-        }
-
-        $sourceQuantity = match ($expectedState) {
+        $bucketQuantity = match ($expectedBucket) {
             InventoryState::RESERVED => $inventory->reserved_quantity,
             InventoryState::PICKED => $inventory->picked_quantity,
             InventoryState::SHIPPED => $inventory->shipped_quantity,
             default => 0,
         };
 
-        if ($sourceQuantity < $quantity) {
-            throw new InsufficientInventoryException(sprintf('Insufficient %s quantity for %s.', $expectedState->value, $transactionType->value));
+        if ($bucketQuantity < $quantity) {
+            throw new InsufficientInventoryException(sprintf('Insufficient %s quantity for %s.', $expectedBucket->value, $transactionType->value));
         }
     }
 
     /**
-     * Determine the current inventory state from the snapshot.
-     */
-    private function resolveState(Inventory $inventory): InventoryState
-    {
-        if ($inventory->available_quantity > 0) {
-            return InventoryState::AVAILABLE;
-        }
-
-        if ($inventory->reserved_quantity > 0) {
-            return InventoryState::RESERVED;
-        }
-
-        if ($inventory->picked_quantity > 0) {
-            return InventoryState::PICKED;
-        }
-
-        if ($inventory->shipped_quantity > 0) {
-            return InventoryState::SHIPPED;
-        }
-
-        return InventoryState::AVAILABLE;
-    }
-
-    /**
-     * Increment inventory version.
+     * Increment inventory version (optimistic-lock style audit counter).
      */
     private function incrementVersion(Inventory $inventory): void
     {
