@@ -17,8 +17,9 @@ use App\Services\ReservationService;
 use App\Services\ShipmentService;
 use App\Services\Providers\MockShippingProvider;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
 
-uses(RefreshDatabase::class);
+uses(TestCase::class, RefreshDatabase::class);
 
 /**
  * Helper: build a customer/order/warehouse/product/inventory fixture with a

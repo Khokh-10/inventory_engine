@@ -70,6 +70,28 @@ Tests cover:
 - Duplicate shipment webhook handling
 - Partial shipment inventory correctness
 - Insufficient-stock rejection
+- Correct release/pick behavior when multiple inventory buckets are non-zero
+  simultaneously (regression test for a state-validation bug found during
+  development — see `docs/AI_USAGE.md`)
+
+### Evidence — passing test run
+
+```
+PS E:\backend(php)\backend projects\ERB\inventory-engine> php artisan test --filter=InventoryReservationEngineTest
+
+  PASS  Tests\Feature\InventoryReservationEngineTest
+  ✓ it prevents overselling when two reservations race for the last unit
+  ✓ it is idempotent when the same reservation command runs twice for the same order
+  ✓ it allows release and pick to succeed when both available and reserved buckets are non-zero
+  ✓ it ignores a duplicate shipment webhook for the same event id
+  ✓ it ships only the remaining quantity on a partial shipment, not the full amount again
+  ✓ it rejects a reservation when requested quantity exceeds available stock
+
+  Tests:    6 passed (19 assertions)
+  Duration: 0.67s
+```
+
+![Passing tests](docs/evidence/tests-passing.png)
 
 ## Key assumptions
 - A reservation expires 24 hours after creation (`expires_at = now()->addDay()`),
