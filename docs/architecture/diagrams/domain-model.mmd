@@ -1,0 +1,9 @@
+erDiagram
+  ORDERS ||--o{ RESERVATIONS : has
+  RESERVATIONS ||--o{ RESERVATION_ITEMS : contains
+  INVENTORIES ||--o{ RESERVATION_ITEMS : allocates
+  ORDERS ||--o{ SHIPMENTS : has
+  SHIPMENTS ||--o{ SHIPMENT_ITEMS : contains
+  SHIPMENTS ||--o{ SHIPMENT_WEBHOOKS : receives
+  SHIPMENTS ||--o{ SHIPMENT_HISTORIES : records
+  INVENTORIES ||--o{ INVENTORY_LEDGERS : records
