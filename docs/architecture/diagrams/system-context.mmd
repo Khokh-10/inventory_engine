@@ -1,0 +1,7 @@
+flowchart LR
+  C[Callers / tests] --> S[Laravel services]
+  S --> DB[(Relational database)]
+  S --> L[Inventory ledger]
+  S --> Q[Queue job]
+  Q --> P[Provider contract]
+  P --> M[Mock provider]
