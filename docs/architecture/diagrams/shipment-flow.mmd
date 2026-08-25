@@ -1,0 +1,10 @@
+sequenceDiagram
+  participant J as Job
+  participant S as ShipmentService
+  participant P as Provider
+  J->>S: process shipment
+  S->>P: ship
+  P-->>S: typed response
+  S->>S: update status and history
+  P-->>S: delivered webhook
+  S->>S: confirm and ship remaining
