@@ -1,0 +1,15 @@
+sequenceDiagram
+  participant R as ReservationService
+  participant O as Order
+  participant I as InventoryService
+  participant L as Ledger
+  R->>O: lock order
+  R->>R: find ACTIVE or CONSUMED
+  alt existing
+    R-->>R: return existing
+  else new
+    R->>I: reserve
+    I->>I: lock, validate, update
+    I->>L: create movement
+    R->>R: create reservation item
+  end
