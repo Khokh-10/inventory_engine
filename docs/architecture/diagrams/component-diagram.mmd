@@ -1,0 +1,11 @@
+flowchart LR
+  RS[ReservationService] --> IS[InventoryService]
+  SS[ShipmentService] --> IS
+  J[ProcessShipmentJob] --> SS
+  CMD[shipments:process] --> J
+  SS --> SPI[ShippingProviderInterface]
+  SPI --> MP[MockShippingProvider]
+  S[(Eloquent models)] --> DB[(Database)]
+  RS --> S
+  IS --> S
+  SS --> S
