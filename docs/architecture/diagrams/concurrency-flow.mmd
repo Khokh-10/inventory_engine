@@ -1,0 +1,10 @@
+sequenceDiagram
+  participant A as Request A
+  participant B as Request B
+  participant I as Inventory
+  A->>I: lockForUpdate
+  B->>I: wait for lock
+  A->>I: reserve last unit
+  A-->>I: commit
+  B->>I: see zero available
+  I-->>B: insufficient inventory
