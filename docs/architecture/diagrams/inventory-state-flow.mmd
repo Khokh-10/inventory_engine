@@ -1,0 +1,6 @@
+stateDiagram-v2
+  available --> reserved : reserve
+  reserved --> available : release
+  reserved --> picked : pick
+  picked --> shipped : ship
+  shipped --> available : return
