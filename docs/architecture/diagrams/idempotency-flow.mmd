@@ -1,0 +1,5 @@
+flowchart TD
+  X[Repeated request or event] --> E{Existing record?}
+  E -->|yes| R[Return stored result]
+  E -->|no| C[Create record and movement]
+  C --> U[Unique DB constraint backstop]
